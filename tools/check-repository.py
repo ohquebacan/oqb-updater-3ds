@@ -1,0 +1,92 @@
+#!/usr/bin/env python3
+"""Check distributable paths, manifests, catalog assets, documentation links and build hashes."""
+from pathlib import Path
+import hashlib,json,re,subprocess,sys
+from urllib.parse import unquote
+ROOT=Path(__file__).resolve().parents[1]
+errors=[]
+def check(ok,reason):
+    if not ok:errors.append(reason)
+def digest(p):return hashlib.sha256(p.read_bytes()).hexdigest()
+files=[ROOT/p for p in subprocess.check_output(['git','ls-files','-z','--cached','--others','--exclude-standard'],cwd=ROOT).decode().split('\0') if p and (ROOT/p).exists()]
+check(bool(files),'No project source files')
+for p in files:
+    rel=p.relative_to(ROOT).as_posix()
+    if p.is_symlink():
+        check(not Path(p.readlink()).is_absolute() and p.resolve().is_relative_to(ROOT) and p.exists(),f'Nonportable symlink: {rel}')
+        continue
+    check(p.is_file(),f'Missing tracked file: {rel}')
+    if not p.is_file():continue
+    check(p.stat().st_size<100*1024*1024,f'GitHub file-size limit: {rel}')
+    check(not any(x in p.relative_to(ROOT).parts for x in ['.local','.cache','.venv','node_modules','__pycache__']),f'Local-only path tracked: {rel}')
+    check(p.suffix.lower() not in ['.dmp','.sav','.srm','.sfc','.smc','.gba','.nds','.z64','.n64','.v64','.cdc','.elf','.o','.a'],f'Private/runtime binary tracked: {rel}')
+    if p.suffix in ['.md','.py','.c','.h','.inc','.js','.json','.sh','.yml'] and 'vendor/' not in rel and 'versions/' not in rel:
+        text=p.read_text(errors='replace')
+        check(not re.search(r'gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{40,}|-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----',text),f'Possible secret: {rel}')
+for p in [ROOT/'README.md',* (ROOT/'docs').glob('*.md'),ROOT/'CONTRIBUTING.md',ROOT/'LICENSE.md']:
+    if p not in files:continue
+    for target in re.findall(r'\]\(([^)]+)\)|\bsrc="([^"]+)"',p.read_text()):
+        url=next(t for t in target if t).strip('<>')
+        if re.match(r'^(https?://|#|mailto:)',url):continue
+        url=unquote(url.split('#')[0].split('?')[0])
+        check((p.parent/url).exists(),f'Broken local link {p.relative_to(ROOT)} -> {url}')
+cat=json.loads((ROOT/'catalog/forge-store.json').read_text())
+check((ROOT/'3ds/romfs/catalog.json').read_bytes()==(ROOT/'catalog/forge-store.json').read_bytes(),'Bundled/maintained catalog differs')
+def paths(value):
+    if isinstance(value,str) and value.startswith('assets/'):check((ROOT/value).is_file(),f'Missing catalog asset: {value}')
+    elif isinstance(value,dict):
+        for v in value.values():paths(v)
+    elif isinstance(value,list):
+        for v in value:paths(v)
+paths(cat)
+# Store text is localized in all eight interface languages (Universal-DB text is not ours).
+LANGS={'es','en','pt','it','fr','de','ru','ja'}
+def locales(value,where):
+    if isinstance(value,dict):
+        if value and set(value)<=LANGS and 'en' in value:
+            check(set(value)==LANGS,f'Catalog text missing {sorted(LANGS-set(value))} at {where}')
+            return
+        for k,v in value.items():locales(v,f'{where}/{k}')
+    elif isinstance(value,list):
+        for i,v in enumerate(value):locales(v,f'{where}/{i}')
+locales(cat,'')
+# Every curated public repository must have offline reader data. Universal-DB is separate.
+reader=json.loads((ROOT/'assets/reader-data/manifest.json').read_text())
+readers={(r['url'],r['accept']) for r in reader['responses']}
+for repo in {a['repo'] for a in cat['apps'] if a.get('repo')}|{'EstebanPdN/forge.store'}:
+    for suffix in ('','/readme','/releases?per_page=12','/commits?per_page=10'):
+        accept='application/vnd.github.raw+json' if suffix=='/readme' else 'application/vnd.github+json'
+        check(('https://api.github.com/repos/'+repo+suffix,accept) in readers,'Missing offline reader data: '+repo+suffix)
+web=json.loads((ROOT/'assets/reader-data/pages.json').read_text())
+for r in reader['responses']:
+    kind='html:' if 'raw+json' in r['accept'] else 'json:'
+    check(kind+r['url'].removeprefix('https://api.github.com') in web['pages'],'Missing bundled web page: '+r['url'])
+for url,path in json.loads((ROOT/'assets/reader-art/urls.json').read_text()).items():
+    check((ROOT/path).is_file(),'Missing bundled web image: '+url)
+media=ROOT/'assets/store-resources'; manifest=json.loads((media/'manifest.json').read_text())
+check(manifest==json.loads((ROOT/'3ds/romfs/media.json').read_text()),'Bundled media manifest differs')
+expected={f"{a['id']}/{v['id']}" for a in cat['apps'] for v in a.get('videos',[])}
+check(set(manifest)==expected,'Catalog media entries differ')
+for key,item in manifest.items():
+    p=media/(key.replace('/','-')+'.fvid')
+    check(p.exists() and p.stat().st_size==item['bytes'] and digest(p)==item['sha256'],f'Media checksum: {key}')
+    check(item['url'].startswith('https://raw.githubusercontent.com/ohquebacan/oqb-updater-3ds-resources/store-packs/'),'Unexpected media URL')
+    check('/releases/' not in item['url'],'Media release URL is forbidden')
+build=ROOT/'builds/3ds/manifest.json'
+if build.exists():
+    info=json.loads(build.read_text());
+    version=int(re.search(r'#define STORE_BUILD (\d+)',(ROOT/'3ds/source/store_version.h').read_text())[1])
+    check(info.get('store_build')==version,'Update manifest/build sequence differs')
+    display_version=re.search(r'#define STORE_VERSION "([^"]+)"',(ROOT/'3ds/source/store_version.h').read_text())[1]
+    check(info.get('version')==display_version,'Update display version differs')
+    update=build.parent/'update.json'
+    check(update.exists() and json.loads(update.read_text())=={k:info[k] for k in ('store_build','version','files')},'Compact update manifest differs')
+    check(not info['debug_dumps'] and not info['dump_upload'],'Public build has debug uploads/dumps')
+    for name,item in info['files'].items():
+        p=build.parent/name;check(p.exists() and p.stat().st_size==item['bytes'] and digest(p)==item['sha256'],f'Build checksum: {name}')
+    for name,sha in info['source_sha256'].items():check(digest(ROOT/name)==sha,f'Build/source mismatch: {name}')
+    check(digest(ROOT/'3ds/romfs/media.json')==info['media_manifest_sha256'],'Build/media mismatch')
+else:check(False,'Public build manifest missing')
+for e in errors:print('FAIL:',e,file=sys.stderr)
+if errors:sys.exit(1)
+print(f'PASS: {len(files)} tracked files; local links, catalog, {len(manifest)} resources, build hashes and source fingerprints')

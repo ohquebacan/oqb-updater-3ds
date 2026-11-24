@@ -1,0 +1,14 @@
+{
+  "store_build": 2026112401,
+  "version": "1.4",
+  "files": {
+    "oqb-updater-3ds.cia": {
+      "bytes": 10658752,
+      "sha256": "e9021df81e0e20712380c60c2aa9f79068490d65c0481632e2a27aa6cff0f541"
+    },
+    "oqb-updater-3ds.3dsx": {
+      "bytes": 11202984,
+      "sha256": "39d53a0e375728f964d229261faac805a559f65163303d05b2657cc6dee61e3f"
+    }
+  }
+}
