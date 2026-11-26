@@ -5007,8 +5007,10 @@
           1004366
         ],
         "files": [
+          "%3DSX%/DK64.3dsx",
           "/3ds/DK64/DK64.3dsx"
-        ]
+        ],
+        "uu": "Donkey Kong 64 3D"
       }
     },
     {
@@ -5332,8 +5334,10 @@
           1006414
         ],
         "files": [
+          "%3DSX%/BanjoRecomp.3dsx",
           "/3ds/BanjoRecomp/BanjoRecomp.3dsx"
-        ]
+        ],
+        "uu": "Banjo: Recompiled 3D"
       }
     },
     {
@@ -9135,7 +9139,11 @@
       "detect": {
         "ids": [
           736675
-        ]
+        ],
+        "files": [
+          "%3DSX%/3ds-recorder.3dsx"
+        ],
+        "uu": "3DS Recorder"
       }
     },
     {
